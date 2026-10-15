@@ -15,7 +15,7 @@ public enum Constants {
         public static let service        = "iCloud"
         public static let headerVersion  = "1.0.1"
         public static let authApp        = "com.apple.gs.xcode.auth"
-        public static let userAgent      = "AuthKit/1 (Macintosh; OS X 26.6) (com.apple.dt.Xcode/26.0)"
+        public static let userAgent      = "akd/1.0 CFNetwork/808.1.4"
     }
 
     // https://idmsa.apple.com/appleauth/auth/devices
@@ -126,12 +126,19 @@ public enum Constants {
     }
 
     public enum Anisette {
-        public static let fallbackAndroidClientInfo = "<Pixel 7> <Android;14;UQ1A.240205.002> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
-        public static let fallbackAndroidUserAgent  = "akd/1.0 CFNetwork/808.1.4"
-        public static let lookupMacClientInfo       = "<Mac15,7> <macOS;27.0;26A5378j> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+        public static let windowsClientInfo         = "<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.iTunes/12.12.4.1)>"
+        public static let windowsUserAgent          = "akd/1.0 CFNetwork/808.1.4"
+        public static let macClientInfo             = "<Mac15,7> <macOS;27.0;26A5378j> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+        public static let macUserAgent              = "akd/1.0 CFNetwork/808.1.4"
 
-        public static let defaultClientInfo     = fallbackAndroidClientInfo
-        public static let defaultUserAgent      = fallbackAndroidUserAgent
+        // Windows client info is widely supported and bypasses both -80045 and 503
+        public static let defaultClientInfo         = windowsClientInfo
+        public static let defaultUserAgent          = windowsUserAgent
+
+        // Backward compatibility aliases
+        public static let fallbackAndroidClientInfo = windowsClientInfo
+        public static let fallbackAndroidUserAgent  = windowsUserAgent
+        public static let lookupMacClientInfo       = macClientInfo
 
         public enum URLs {
             public static let grandSlamLookup   = AnisetteConstants.URLs.grandSlamLookup

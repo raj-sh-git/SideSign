@@ -356,11 +356,12 @@ public extension DeveloperPortal {
         request.httpMethod = "POST"
         request.httpBody = plistData
 
+        let userAgent = anisetteData.userAgent.isEmpty ? h.grandSlam.userAgent : anisetteData.userAgent
         let headers: [String: String] = [
             "Content-Type": "text/x-xml-plist",
             "X-MMe-Client-Info": anisetteData.clientInfo,
             "Accept": "*/*",
-            "User-Agent": h.grandSlam.userAgent,
+            "User-Agent": userAgent,
             "Connection": "close"
         ]
         headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
@@ -383,6 +384,12 @@ public extension DeveloperPortal {
         guard !data.isEmpty else {
             debugLog("[SideSign] Auth endpoint returned 0 bytes (HTTP \(statusCode))")
             throw ServerError.badServerResponse(reason: "Auth endpoint returned empty response (0 bytes)", jsonPayload: "0 bytes")
+        }
+
+        if statusCode == 503 || (500...599).contains(statusCode) {
+            let rawStr = String(data: data, encoding: .utf8) ?? ""
+            debugLog("[SideSign] Auth endpoint returned HTTP \(statusCode): \(rawStr)")
+            throw ServerError.badServerResponse(reason: "Apple authentication service is temporarily unavailable (HTTP \(statusCode)). Please try again in a few moments.", jsonPayload: rawStr)
         }
 
         guard let responseDictionary = parsePlistOrJSON(data) else {

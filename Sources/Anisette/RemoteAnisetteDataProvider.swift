@@ -159,6 +159,11 @@ public struct RemoteAnisetteDataProvider: AnisetteDataProvider, Sendable {
             throw AnisetteError.badServerResponse(statusCode: status, payload: payload)
         }
 
+        let rawPayload = String(data: data, encoding: .utf8) ?? ""
+        if rawPayload.contains("-45061") {
+            throw AnisetteError.incorrectlyProvisioned(payload: rawPayload)
+        }
+
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: String] else {
             throw AnisetteError.invalidAnisetteData
         }
