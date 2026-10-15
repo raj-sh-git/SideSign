@@ -550,9 +550,6 @@ public final class AnisetteDataManager: @unchecked Sendable {
             var resynced = currentData
             resynced.oneTimePassword = rawResponse.oneTimePassword
             resynced.machineID = rawResponse.machineID
-            if let routing = rawResponse.routingInfo {
-                resynced.routingInfo = routing
-            }
             return resynced
         default:
             throw AnisetteError.badServerResponse(statusCode: -1, payload: "Anisette resync only supported for remote mode")
