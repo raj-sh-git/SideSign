@@ -126,8 +126,12 @@ public enum Constants {
     }
 
     public enum Anisette {
-        public static let defaultClientInfo     = AnisetteConstants.defaultClientInfo
-        public static let defaultUserAgent      = AnisetteConstants.defaultUserAgent
+        public static let fallbackAndroidClientInfo = "<Pixel 7> <Android;14;UQ1A.240205.002> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+        public static let fallbackAndroidUserAgent  = "akd/1.0 CFNetwork/808.1.4"
+        public static let lookupMacClientInfo       = "<Mac15,7> <macOS;27.0;26A5378j> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+
+        public static let defaultClientInfo     = fallbackAndroidClientInfo
+        public static let defaultUserAgent      = fallbackAndroidUserAgent
 
         public enum URLs {
             public static let grandSlamLookup   = AnisetteConstants.URLs.grandSlamLookup
@@ -163,6 +167,7 @@ public enum Constants {
 }
 
 public enum GrandSlamAuthErrorCodes {
+    public static let actionCannotBeCompleted             = -80045
     public static let incorrectCredentials                = -22406
     public static let appSpecificPasswordRequired         = -20101
     public static let appSpecificPasswordRequiredFallback = -20209

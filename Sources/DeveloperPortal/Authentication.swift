@@ -27,22 +27,23 @@ public extension DeveloperPortal {
         debugLog("[SideSign] Starting authenticate...")
         verboseLog("[SideSign] Authenticating Apple ID: \(sanitizedAppleID)")
 
-        let clientDictionary: [String: any Sendable] = [
+        var currentAnisetteData = anisetteData
+        var clientDictionary: [String: any Sendable] = [
             "bootstrap": true,
             "icscrec": true,
             "pbe": false,
             "prkgen": true,
             "svct": customHeaders.grandSlam.service,
-            "loc": anisetteData.locale,
-            "X-Apple-Locale": anisetteData.locale,
-            "X-Apple-I-MD": anisetteData.oneTimePassword,
-            "X-Apple-I-MD-M": anisetteData.machineID,
-            "X-Mme-Device-Id": anisetteData.deviceID,
-            "X-Apple-I-MD-LU": anisetteData.localUserID,
-            "X-Apple-I-MD-RINFO": anisetteData.routingInfo,
-            "X-Apple-I-SRL-NO": anisetteData.serialNumber,
-            "X-Apple-I-Client-Time": anisetteData.clientTime,
-            "X-Apple-I-TimeZone": anisetteData.timeZone
+            "loc": currentAnisetteData.locale,
+            "X-Apple-Locale": currentAnisetteData.locale,
+            "X-Apple-I-MD": currentAnisetteData.oneTimePassword,
+            "X-Apple-I-MD-M": currentAnisetteData.machineID,
+            "X-Mme-Device-Id": currentAnisetteData.deviceID,
+            "X-Apple-I-MD-LU": currentAnisetteData.localUserID,
+            "X-Apple-I-MD-RINFO": currentAnisetteData.routingInfo,
+            "X-Apple-I-SRL-NO": currentAnisetteData.serialNumber,
+            "X-Apple-I-Client-Time": currentAnisetteData.clientTime,
+            "X-Apple-I-TimeZone": currentAnisetteData.timeZone
         ]
 
         guard let srpClient = SRPClient(),
@@ -55,7 +56,7 @@ public extension DeveloperPortal {
         verboseLog("[SideSign] SRPClient started. Generated public key A: \(publicKey.hexEncodedString())")
 
         // 1. Send authentication 'init' request
-        let initParameters: [String: any Sendable] = [
+        var initParameters: [String: any Sendable] = [
             "A2k": publicKey,
             "cpd": clientDictionary,
             "ps": ["s2k", "s2k_fo"],
@@ -64,7 +65,45 @@ public extension DeveloperPortal {
         ]
 
         debugLog("[SideSign] Sending authentication 'init' request...")
-        let initResponse = try await sendAuthenticationRequest(parameters: initParameters, anisetteData: anisetteData)
+        var initResponse = try await sendAuthenticationRequest(parameters: initParameters, anisetteData: currentAnisetteData)
+
+        // Check for Anisette Resync (hsc == 434)
+        if let status = initResponse["Status"] as? [String: any Sendable],
+           (status["hsc"] as? Int) == 434 {
+            debugLog("[SideSign] Anisette resync required (hsc 434); syncing then retrying init...")
+            let sim: String? = {
+                if let data = status["X-Apple-I-MD-DATA"] as? Data {
+                    return data.base64EncodedString()
+                } else if let str = status["X-Apple-I-MD-DATA"] as? String {
+                    return str
+                }
+                return nil
+            }()
+
+            if let sim {
+                let freshAnisette = try await AnisetteDataManager.shared.resync(sim: sim, currentData: currentAnisetteData)
+                currentAnisetteData = freshAnisette
+
+                clientDictionary["X-Apple-I-MD"] = freshAnisette.oneTimePassword
+                clientDictionary["X-Apple-I-MD-M"] = freshAnisette.machineID
+                if !freshAnisette.routingInfo.isEmpty {
+                    clientDictionary["X-Apple-I-MD-RINFO"] = freshAnisette.routingInfo
+                }
+
+                initParameters["cpd"] = clientDictionary
+
+                initResponse = try await sendAuthenticationRequest(parameters: initParameters, anisetteData: currentAnisetteData)
+            } else {
+                debugLog("[SideSign] Received hsc 434 but missing X-Apple-I-MD-DATA payload")
+            }
+        }
+
+        if let status = initResponse["Status"] as? [String: any Sendable],
+           let ec = status["ec"] as? Int, ec != 0 {
+            let errorDesc = status["em"] as? String
+            debugLog("[SideSign] Auth init failed after resync check with error \(ec): \(errorDesc ?? "nil")")
+            throw ServerError.underlyingError(code: ec, message: errorDesc ?? "Authentication init failed")
+        }
 
         guard let c = initResponse["c"] as? String,
               let salt = initResponse["s"] as? Data,
@@ -127,7 +166,7 @@ public extension DeveloperPortal {
             "u": sanitizedAppleID
         ]
 
-        let completeResponseDictionary = try await sendAuthenticationRequest(parameters: completeParameters, anisetteData: anisetteData)
+        let completeResponseDictionary = try await sendAuthenticationRequest(parameters: completeParameters, anisetteData: currentAnisetteData)
         debugLog("[SideSign] SRP complete step finished.")
 
         guard let encryptedData = completeResponseDictionary["spd"] as? Data else {
@@ -200,7 +239,7 @@ public extension DeveloperPortal {
         let twoFactorAuthContext = TwoFactorAuthContext(
             dsid: dsid,
             idmsToken: idmsToken,
-            anisetteData: anisetteData,
+            anisetteData: currentAnisetteData,
             xcodeVersion: xcodeVersion
         )
 
@@ -223,7 +262,7 @@ public extension DeveloperPortal {
                     try await authenticate(
                         appleID: unsanitizedAppleID,
                         password: password,
-                        anisetteData: anisetteData,
+                        anisetteData: currentAnisetteData,
                         xcodeVersion: xcodeVersion,
                         machinePassword: machinePassword,
                         accountRepairHandler: accountRepairHandler,
@@ -287,11 +326,11 @@ public extension DeveloperPortal {
             "u": dsid
         ]
 
-        let fetchedToken = try await fetchAuthToken(app: app, parameters: appTokensParameters, sessionKey: sessionKey, anisetteData: anisetteData)
+        let fetchedToken = try await fetchAuthToken(app: app, parameters: appTokensParameters, sessionKey: sessionKey, anisetteData: currentAnisetteData)
         let session = Session(
             dsid: dsid,
             authToken: fetchedToken.token,
-            anisetteData: anisetteData,
+            anisetteData: currentAnisetteData,
             xcodeVersion: xcodeVersion,
             machinePassword: machinePassword,
             creationDate: fetchedToken.creationDate,
@@ -360,9 +399,10 @@ public extension DeveloperPortal {
         }
 
         let errorCode = status["ec"] as? Int ?? 0
-        if errorCode != 0 {
+        let hsc = status["hsc"] as? Int ?? 0
+        if errorCode != 0 && hsc != 434 {
             let errorDesc = status["em"] as? String
-            debugLog("[SideSign] Auth endpoint returned error code \(errorCode): \(errorDesc ?? "No error message")")
+            debugLog("[SideSign] Auth endpoint returned error code \(errorCode) (hsc: \(hsc)): \(errorDesc ?? "No error message")")
             switch errorCode {
             case GrandSlamAuthErrorCodes.incorrectCredentials:
                 throw DeveloperPortalError.incorrectCredentials(cause: errorDesc)

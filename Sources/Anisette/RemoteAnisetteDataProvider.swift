@@ -50,11 +50,59 @@ public struct RemoteAnisetteDataProvider: AnisetteDataProvider, Sendable {
         self.serverURL = serverURL
     }
 
+    public struct AnisetteClientInfo: Codable, Sendable {
+        public let clientInfo: String
+        public let userAgent: String
+
+        enum CodingKeys: String, CodingKey {
+            case clientInfo = "client_info"
+            case userAgent = "user_agent"
+        }
+    }
+
+    public func fetchClientInfo() async throws -> AnisetteClientInfo {
+        let baseURL = serverURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(baseURL)/v3/client_info") else {
+            throw AnisetteError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = Constants.Anisette.serverValidationTimeout
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResp = response as? HTTPURLResponse, httpResp.isSuccess else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw AnisetteError.badServerResponse(statusCode: status, payload: "Failed to fetch client_info from \(serverURL.absoluteString)")
+        }
+
+        return try JSONDecoder().decode(AnisetteClientInfo.self, from: data)
+    }
+
     public func getAnisetteHeaders(
         libDir: String,
         provisioningDir: String,
         identifier: [UInt8],
         adiPb: [UInt8]
+    ) async throws -> AnisetteDataResponse {
+        try await getAnisetteHeaders(
+            libDir: libDir,
+            provisioningDir: provisioningDir,
+            identifier: identifier,
+            adiPb: adiPb,
+            sim: nil,
+            deviceID: nil,
+            localUserID: nil
+        )
+    }
+
+    public func getAnisetteHeaders(
+        libDir: String,
+        provisioningDir: String,
+        identifier: [UInt8],
+        adiPb: [UInt8],
+        sim: String? = nil,
+        deviceID: String? = nil,
+        localUserID: String? = nil
     ) async throws -> AnisetteDataResponse {
         let cleanIdentifier = identifier.map { String(format: "%02x", $0) }.joined()
         let baseURL = serverURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -68,20 +116,33 @@ public struct RemoteAnisetteDataProvider: AnisetteDataProvider, Sendable {
                 postReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 postReq.cachePolicy = .reloadIgnoringLocalCacheData
 
-                let payload: [String: String] = [
+                var payload: [String: String] = [
                     "identifier": cleanIdentifier,
                     "adi_pb": Data(adiPb).base64EncodedString()
                 ]
+                if let sim = sim {
+                    payload["sim"] = sim
+                    if let dev = deviceID { payload["device_id"] = dev }
+                    if let lu = localUserID { payload["md_lu"] = lu }
+                }
                 postReq.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
                 if let (data, response) = try? await URLSession.shared.data(for: postReq),
-                   let httpResp = response as? HTTPURLResponse, httpResp.isSuccess,
-                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
-                    if let result = json["result"], result == "GetHeadersError" {
-                        let msg = json["message"] ?? "GetHeadersError"
-                        throw AnisetteError.badServerResponse(statusCode: -1, payload: msg)
+                   let httpResp = response as? HTTPURLResponse {
+                    if let json = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
+                        if let result = json["result"], result == "GetHeadersError" {
+                            let msg = json["message"] ?? "GetHeadersError"
+                            if msg.contains("-45061") {
+                                throw AnisetteError.incorrectlyProvisioned(payload: msg)
+                            }
+                            throw AnisetteError.badServerResponse(statusCode: httpResp.statusCode, payload: msg)
+                        }
+                        if httpResp.isSuccess {
+                            return try AnisetteDataResponse(from: json)
+                        }
+                    } else if let str = String(data: data, encoding: .utf8), str.contains("-45061") {
+                        throw AnisetteError.incorrectlyProvisioned(payload: str)
                     }
-                    return try AnisetteDataResponse(from: json)
                 }
             }
         }

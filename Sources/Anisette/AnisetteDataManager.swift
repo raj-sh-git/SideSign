@@ -187,9 +187,12 @@ public enum AnisetteError: LocalizedError, Sendable {
     case invalidURL
     case outdatedV1Server(server: URL, reason: String? = nil)
     case serverListFetchFailed(String)
+    case incorrectlyProvisioned(payload: String)
 
     public var errorDescription: String? {
         switch self {
+        case .incorrectlyProvisioned(let payload):
+            return "Anisette state is invalid or de-synchronized on server: \(payload)"
         case .modeNotConfigured:
             return "No Anisette operating mode is configured. Set activeMode or pass a mode parameter."
         case .invalidServerSourceURL:
@@ -433,16 +436,53 @@ public final class AnisetteDataManager: @unchecked Sendable {
             }
         }
 
-        let clientInfo = headers?.clientInfo ?? Constants.Anisette.defaultClientInfo
-        let client = try await getClient(for: resolvedMode, clientInfo: clientInfo)
+        var clientInfo = headers?.clientInfo ?? Constants.Anisette.defaultClientInfo
+        var userAgent = headers?.userAgent ?? Constants.Anisette.defaultUserAgent
+
+        if case .remote(let serverURL) = resolvedMode {
+            if headers?.clientInfo == nil || headers?.clientInfo == Constants.Anisette.defaultClientInfo {
+                if let info = try? await RemoteAnisetteDataProvider(serverURL: serverURL).fetchClientInfo() {
+                    clientInfo = info.clientInfo
+                    userAgent = info.userAgent
+                    debugLog("[AnisetteDataManager] Using dynamically negotiated client_info from \(serverURL.absoluteString): \(clientInfo)")
+                }
+            }
+        }
+
+        let effectiveHeaders = (headers ?? AnisetteRequestHeaders()).with {
+            $0.clientInfo = clientInfo
+            $0.userAgent = userAgent
+        }
+
+        let client = try await getClient(for: resolvedMode, clientInfo: clientInfo, userAgent: userAgent)
 
         do {
             let (rawHeaders, newBlob) = try await client.getAnisetteData(
                 identifier: identifier,
                 storage: .memory(existingBlob: existingAdiBlob),
-                headers: headers
+                headers: effectiveHeaders
             )
 
+            let anisetteData = try Self.validateAndCreateAnisetteData(from: rawHeaders)
+
+            if case .remote(let serverURL) = resolvedMode {
+                remoteCache = RemoteAnisetteCacheEntry(
+                    serverURL: serverURL,
+                    identifier: identifier,
+                    data: anisetteData,
+                    newAdiBlob: newBlob,
+                    timestamp: Date()
+                )
+            }
+
+            return (anisetteData, newBlob)
+        } catch let err as AnisetteError where self.isStateDesynced(err) {
+            debugLog("[AnisetteDataManager] Server indicated state is de-synchronized / not provisioned (-45061). Reprovisioning...")
+            let (rawHeaders, newBlob) = try await client.getAnisetteData(
+                identifier: identifier,
+                storage: .memory(existingBlob: nil),
+                headers: effectiveHeaders
+            )
             let anisetteData = try Self.validateAndCreateAnisetteData(from: rawHeaders)
 
             if case .remote(let serverURL) = resolvedMode {
@@ -470,14 +510,63 @@ public final class AnisetteDataManager: @unchecked Sendable {
         }
     }
 
-    private func getClient(for mode: AnisetteMode, clientInfo: String) async throws -> AnisetteClient {
+    private func isStateDesynced(_ error: AnisetteError) -> Bool {
+        switch error {
+        case .incorrectlyProvisioned:
+            return true
+        case .badServerResponse(_, let payload):
+            return payload.contains("-45061")
+        default:
+            return false
+        }
+    }
+
+    public func resync(
+        sim: String,
+        currentData: AnisetteData,
+        existingAdiBlob: Data? = nil
+    ) async throws -> AnisetteData {
+        guard let resolvedMode = self.activeMode else {
+            throw AnisetteError.modeNotConfigured
+        }
+
+        switch resolvedMode {
+        case .remote(let serverURL):
+            let provider = RemoteAnisetteDataProvider(serverURL: serverURL)
+            let resolvedUUID = remoteCache?.identifier ?? UUID(uuidString: currentData.deviceID) ?? UUID()
+            var uuidVal = resolvedUUID.uuid
+            let identifierBytes = withUnsafeBytes(of: &uuidVal) { Array($0) }
+            let adiBlob = existingAdiBlob ?? remoteCache?.newAdiBlob ?? Data()
+
+            let rawResponse = try await provider.getAnisetteHeaders(
+                libDir: "",
+                provisioningDir: provisioningDir.path,
+                identifier: identifierBytes,
+                adiPb: [UInt8](adiBlob),
+                sim: sim,
+                deviceID: currentData.deviceID,
+                localUserID: currentData.localUserID
+            )
+            var resynced = currentData
+            resynced.oneTimePassword = rawResponse.oneTimePassword
+            resynced.machineID = rawResponse.machineID
+            if let routing = rawResponse.routingInfo {
+                resynced.routingInfo = routing
+            }
+            return resynced
+        default:
+            throw AnisetteError.badServerResponse(statusCode: -1, payload: "Anisette resync only supported for remote mode")
+        }
+    }
+
+    private func getClient(for mode: AnisetteMode, clientInfo: String, userAgent: String = Constants.Anisette.defaultUserAgent) async throws -> AnisetteClient {
         switch mode {
         case .remote(let server):
             try FileManager.default.createDirectory(at: provisioningDir, withIntermediateDirectories: true)
             return try AnisetteClient(
                 provisioningDir: provisioningDir,
                 clientInfo: clientInfo,
-                userAgent: Constants.Anisette.defaultUserAgent,
+                userAgent: userAgent,
                 lookupURL: Constants.Anisette.URLs.grandSlamLookup,
                 requiredLibraries: Constants.Anisette.Libraries.requiredNames,
                 provider: RemoteAnisetteDataProvider(serverURL: server)
